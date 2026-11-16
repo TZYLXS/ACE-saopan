@@ -1,0 +1,34 @@
+[
+    {
+        "stepTitle": "安装前确认",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "存储体检会把画面直接画到服务器的物理显示器（/dev/fb0），所以需要以 root 身份运行；请只在本机手动安装使用。"
+            },
+            {
+                "type": "tips",
+                "helpText": "安装时会检查并自动补装系统依赖：python3、python3-pyqt5、fonts-wqy-microhei、smartmontools、e2fsprogs。补装日志在 /var/log/renhua-install.log，离线环境可能装不上，程序仍可先用 CLI 部分。"
+            },
+            {
+                "type": "tips",
+                "helpText": "应用会占用本机 8770 端口作为 Web 面板（应用图标点开就是它），物理屏控制台与控制通道走 127.0.0.1:8771，不对外暴露。"
+            },
+            {
+                "type": "tips",
+                "helpText": "物理屏键盘会被程序独占（保证 F1-F6 不被系统切走）。运行期间本机键盘只能操作这个控制台，退出或卸载后恢复。"
+            },
+            {
+                "type": "switch",
+                "field": "wizard_risk_acknowledged",
+                "label": "我已了解：应用以 root 运行、独占本机键盘、会占用 8770 端口",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请先确认已了解上述说明"
+                    }
+                ]
+            }
+        ]
+    }
+]

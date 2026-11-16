@@ -1,0 +1,84 @@
+#!/bin/bash
+# renhua：start / stop / status / restart
+# 起两个进程：物理屏控制台（/dev/fb0，PyQt5 linuxfb）+ Web 面板（本机 8770）
+APPDEST="${TRIM_APPDEST:-}"
+if [ -z "$APPDEST" ]; then
+  APPDEST="$(cd "$(dirname "$0")/../target" 2>/dev/null && pwd)"
+fi
+APP="$APPDEST/RenHua"
+CONF=/etc/renhua/renhua.conf
+PIDF=/var/run/renhua-console.pid
+WPIDF=/var/run/renhua-web.pid
+LOGF=/var/log/renhua-console.log
+WLOGF=/var/log/renhua-web.log
+WEB_PORT=8770
+CTRL_PORT=8771
+
+alive() {
+  [ -f "$1" ] || return 1
+  p="$(tr -d '[:space:]' < "$1" 2>/dev/null)"
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+do_start() {
+  page=5
+  [ -r "$CONF" ] && . "$CONF"
+  case "$page" in 1|2|3|4|5|6) ;; *) page=5 ;; esac
+
+  mkdir -p /var/run /var/log /etc/renhua
+
+  # 物理屏控制台
+  if ! alive "$PIDF"; then
+    SCRIPT="$APP/share/renhua-console.py"
+    if [ ! -f "$SCRIPT" ]; then
+      echo "missing $SCRIPT" >> "$LOGF"
+    elif [ ! -w /dev/fb0 ]; then
+      echo "$(date '+%F %T') /dev/fb0 不可写（无显示器或未开 framebuffer），跳过物理屏；Web 面板照常可用" >> "$LOGF"
+    elif ! /usr/bin/python3 -c 'import PyQt5' >/dev/null 2>&1; then
+      echo "$(date '+%F %T') PyQt5 缺失，跳过物理屏；Web 面板照常可用（装 python3-pyqt5 后重启应用即可）" >> "$LOGF"
+    else
+      RENHUA_CTRL_PORT="$CTRL_PORT" \
+        QT_QPA_PLATFORM="linuxfb:fb=/dev/fb0" QT_QPA_FONTDIR="$APP/share/fonts" \
+        setsid nohup /usr/bin/python3 "$SCRIPT" --page "$page" >> "$LOGF" 2>&1 &
+      echo $! > "$PIDF"
+    fi
+  fi
+
+  # Web 面板
+  if ! alive "$WPIDF"; then
+    SCRIPT="$APP/share/renhua-web.py"
+    if [ -f "$SCRIPT" ]; then
+      if ss -ltn 2>/dev/null | grep -q ":$WEB_PORT "; then
+        echo "$(date '+%F %T') 端口 $WEB_PORT 已被占用，Web 面板未启动" >> "$WLOGF"
+        echo "port $WEB_PORT busy" > "$WPIDF"
+        rm -f "$WPIDF"
+      else
+        RENHUA_WEB_PORT="$WEB_PORT" RENHUA_CTRL_PORT="$CTRL_PORT" \
+          setsid nohup /usr/bin/python3 "$SCRIPT" --port "$WEB_PORT" >> "$WLOGF" 2>&1 &
+        echo $! > "$WPIDF"
+      fi
+    else
+      echo "missing $SCRIPT" >> "$WLOGF"
+    fi
+  fi
+
+  sleep 2
+  alive "$PIDF" || alive "$WPIDF"
+}
+
+do_stop() {
+  alive "$PIDF" && kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
+  alive "$WPIDF" && kill "$(cat "$WPIDF" 2>/dev/null)" 2>/dev/null
+  pkill -f "$APP/share/renhua-console.py" 2>/dev/null
+  pkill -f "$APP/share/renhua-web.py" 2>/dev/null
+  rm -f "$PIDF" "$WPIDF"
+  return 0
+}
+
+case "${1:-}" in
+  start)   do_start ;;
+  stop)    do_stop ;;
+  restart) do_stop; sleep 1; do_start ;;
+  status)  alive "$PIDF" || alive "$WPIDF" ;;
+  *) exit 1 ;;
+esac

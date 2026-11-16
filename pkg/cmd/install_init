@@ -1,0 +1,7 @@
+#!/bin/bash
+# 安装前：停掉早期手工部署的 systemd 守护，避免两个进程同时写 /dev/fb0
+for u in renhua-console.service renhua-scanprog.service renhua-screen.service; do
+  systemctl stop "$u" >/dev/null 2>&1 || true
+  systemctl disable "$u" >/dev/null 2>&1 || true
+done
+exit 0

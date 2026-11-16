@@ -1,0 +1,16 @@
+appname                    = renhua
+version                    = 1.1.0
+display_name               = 存储体检
+desc                       = 存储故障处置 + 报错人话翻译 + 物理屏直显。<br>含 <b>renhua</b> 命令（把 dmesg / journal 的存储报错翻成人话，给原文 + 人话 + 建议 + 严重度）、PyQt5 全自绘的物理屏控制台（F1-F6：帮助 / 坏块扫描 / 端口识别 / 健康体检 / 报错翻译 / 测速，直写 /dev/fb0，不依赖桌面）、以及本 Web 面板（同一个控制台的浏览器入口，可切页、起停扫描与测速）。<br>系统依赖：python3、python3-pyqt5、fonts-wqy-microhei、smartmontools、e2fsprogs（安装时自动补）。
+arch                       = x86_64
+platform                   = x86
+source                     = thirdparty
+maintainer                 = TZYLXS
+distributor                = TZYLXS
+desktop_uidir              = ui
+desktop_applaunchname      = renhua.Application
+service_port               = 8770
+ctl_stop                   = true
+checkport                  = false
+disable_authorization_path = true
+checksum                   = d3806a58a3ea968d6fcdb2ad7c67e913

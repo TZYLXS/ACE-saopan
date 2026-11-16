@@ -1,0 +1,38 @@
+#!/bin/bash
+APPDEST="${TRIM_APPDEST:-}"
+APP="$APPDEST/RenHua"
+LOG=/var/log/renhua-install.log
+: > "$LOG" 2>/dev/null || true
+
+mkdir -p /etc/renhua /var/run /var/log /var/lib/renhua
+
+# --- 依赖（缺什么补什么，装不上就记日志，程序仍能起 CLI 部分） ---
+need=""
+command -v python3 >/dev/null 2>&1 || need="$need python3"
+python3 -c 'import PyQt5' >/dev/null 2>&1 || need="$need python3-pyqt5"
+[ -f /usr/share/fonts/truetype/wqy/wqy-microhei.ttc ] || need="$need fonts-wqy-microhei"
+command -v smartctl >/dev/null 2>&1 || need="$need smartmontools"
+command -v badblocks >/dev/null 2>&1 || need="$need e2fsprogs"
+if [ -n "$need" ]; then
+  echo "installing:$need" >> "$LOG"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $need >> "$LOG" 2>&1 \
+    || apt-get update -qq >> "$LOG" 2>&1 \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $need >> "$LOG" 2>&1
+fi
+
+# --- 配置：默认物理屏停在 F5（报错翻译总览），Web 面板口 8770 ---
+if [ ! -f /etc/renhua/renhua.conf ]; then
+  cat > /etc/renhua/renhua.conf <<'CONF'
+# 物理屏开机停在哪个页面：1..6（5 = F5 报错翻译）
+page=5
+CONF
+fi
+
+chmod 0755 "$APP/bin/renhua" "$APP/bin/renhua-screen" "$APP/bin/renhua-screen-mode" >/dev/null 2>&1 || true
+ln -sf "$APP/bin/renhua" /usr/local/bin/renhua 2>/dev/null || true
+ln -sf "$APP/bin/renhua-screen" /usr/local/bin/renhua-screen 2>/dev/null || true
+ln -sf "$APP/bin/renhua-screen-mode" /usr/local/bin/renhua-screen-mode 2>/dev/null || true
+
+"$(dirname "$0")/main" start >> "$LOG" 2>&1 || true
+echo "install done: $(date '+%F %T')" >> "$LOG"
+exit 0

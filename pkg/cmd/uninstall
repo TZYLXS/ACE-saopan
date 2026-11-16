@@ -1,0 +1,6 @@
+#!/bin/bash
+"$(dirname "$0")/main" stop >/dev/null 2>&1 || true
+rm -f /usr/local/bin/renhua /usr/local/bin/renhua-screen /usr/local/bin/renhua-screen-mode
+rm -f /var/run/renhua-console.pid /var/run/renhua-web.pid
+rm -rf /etc/renhua
+exit 0
