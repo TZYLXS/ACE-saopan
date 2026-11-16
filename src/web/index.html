@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>存储体检控制台</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="dot"></span>
+      <div>
+        <h1>存储体检控制台</h1>
+        <p class="sub">报错人话翻译 · 坏块扫描 · 磁盘测速 · 物理屏定页</p>
+      </div>
+    </div>
+    <div class="meta">
+      <span id="host">--</span>
+      <span id="clock">--</span>
+      <span id="consoleState" class="badge">连接中</span>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-page="0">F1 帮助</button>
+    <button class="tab" data-page="1">F2 坏块扫描</button>
+    <button class="tab" data-page="2">F3 端口识别</button>
+    <button class="tab" data-page="3">F4 健康体检</button>
+    <button class="tab" data-page="4">F5 报错翻译</button>
+    <button class="tab" data-page="5">F6 测速</button>
+  </nav>
+
+  <div class="view" id="view-help">
+    <section class="card">
+      <div class="card-head">
+        <h2>F1 · 帮助</h2>
+        <span class="tip">这一页和物理屏上的 F1 是同一份说明</span>
+      </div>
+      <div class="help">
+        <div class="helpbox">
+          <h3>物理屏 F1-F6</h3>
+          <p>F1 帮助　F2 坏块扫描　F3 端口识别　F4 健康体检　F5 报错翻译　F6 测速</p>
+          <p>键盘：F1-F6 切页，方向键选盘/移动，Enter 开始，ESC 退出（扫描或测速中先停任务再退出）。</p>
+          <p>键盘被程序独占，运行期间本机键盘只能操作这个控制台；退出或卸载后恢复。</p>
+        </div>
+        <div class="helpbox">
+          <h3>本页与物理屏的关系</h3>
+          <p>顶部这六个标签就是物理屏的六个页面：点一下就会把服务器那块屏切过去，反过来在服务器上按 F1-F6，这里的高亮也会跟着变。</p>
+        </div>
+        <div class="helpbox">
+          <h3>命令行</h3>
+          <p><code>renhua --dmesg</code> 把内核日志里的存储报错翻成人话</p>
+          <p><code>renhua --rules</code> 看内置规则覆盖范围（30 条）</p>
+          <p><code>renhua-screen-mode 1..6|status</code> 设定开屏默认页 / 查运行状态</p>
+        </div>
+      </div>
+      <div id="ovState" class="kv"></div>
+    </section>
+  </div>
+
+  <div class="view" id="view-scan">
+    <section class="card">
+      <div class="card-head">
+        <h2>F2 · 坏块扫描</h2>
+        <span class="tip">badblocks 只读校验，不写盘；系统盘不参与</span>
+      </div>
+      <div class="row">
+        <select id="scanDev"></select>
+        <button id="scanStart" class="btn primary">开始扫描</button>
+        <button id="scanStop" class="btn">停止</button>
+        <span id="scanMsg" class="msg"></span>
+      </div>
+      <div class="bar"><i id="scanBar"></i></div>
+      <div id="scanInfo" class="kv"></div>
+      <div id="scanAdvice" class="advice hide"></div>
+    </section>
+  </div>
+
+  <div class="view" id="view-ports">
+    <section class="card">
+      <div class="card-head">
+        <h2>F3 · 端口识别</h2>
+        <span class="tip">ATA1-AT6 哪个口有盘、盘是谁、跑在什么速率</span>
+      </div>
+      <div id="ataPorts" class="ata"></div>
+      <div id="portRows" class="ovlist"></div>
+    </section>
+  </div>
+
+  <div class="view" id="view-smart">
+    <section class="card">
+      <div class="card-head">
+        <h2>F4 · 健康体检</h2>
+        <span class="tip">型号 / SN / 温度 / 待映射 / 离线不可纠正 / CRC 来自 smartctl</span>
+      </div>
+      <div id="disks" class="disk-grid"></div>
+    </section>
+  </div>
+
+  <div class="view" id="view-hits">
+    <section class="card">
+      <div class="card-head">
+        <h2>F5 · 报错翻译</h2>
+        <span class="tip" id="hitsTime">近 24 小时 · 每 30 秒重扫 journal + dmesg</span>
+      </div>
+      <div id="hits" class="hits"></div>
+    </section>
+  </div>
+
+  <div class="view" id="view-speed">
+    <section class="card">
+      <div class="card-head">
+        <h2>F6 · 测速</h2>
+        <span class="tip">顺序读/写 1GB · 小文件 32MB · 零碎 32MB · RND4K Q1T1</span>
+      </div>
+      <div class="row">
+        <select id="speedDev"></select>
+        <button id="speedStart" class="btn primary">开始测速</button>
+        <button id="speedStop" class="btn">停止</button>
+        <span id="speedMsg" class="msg"></span>
+      </div>
+      <div class="bar"><i id="speedBar"></i></div>
+      <div id="speedNow" class="kv"></div>
+      <table class="res">
+        <thead><tr><th>阶段</th><th>结果</th></tr></thead>
+        <tbody id="speedRows"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <footer class="foot">
+    <span>物理屏键盘：F1-F6 切页，ESC 退出（扫描/测速中先停任务）</span>
+    <span id="msgLine"></span>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
