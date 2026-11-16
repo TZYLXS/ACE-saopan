@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+apptree/
+
+# 字体本体不入库（体积 5MB，构建时从系统字体目录拷贝）
+assets/wqy-microhei.ttc

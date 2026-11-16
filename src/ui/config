@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "renhua.Application": {
+            "title": "存储体检",
+            "desc": "报错人话翻译 / 坏块扫描 / 磁盘测速 / 物理屏定页",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "http",
+            "port": "8770",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}
