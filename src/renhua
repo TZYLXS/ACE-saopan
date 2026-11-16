@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""renhua —— 把 Linux 内核/存储报错翻译成人话
+
+用法:
+  sudo dmesg | renhua
+  renhua --dmesg            # 直接读内核日志
+  renhua --journal          # 读 journalctl -xe
+  dmesg | renhua --top      # 只按类别汇总出现次数
+  renhua "ata3.00: error: { UNC }"   # 直接翻译一段文本
+  renhua --rules            # 查看内置规则覆盖范围
+"""
+import re
+import subprocess
+import sys
+
+# 规则：(正则, 标题, 等级, 人话解释, 建议, 类别key)
+RULES = [
+    # ---------- 设备映射层（dm / md = 存储空间映射，底下才是物理盘） ----------
+    (r"Buffer I\/O error on dev (dm-\d+|md\d+|sd\w+)", "块设备读写彻底失败", "严重",
+     "内核读写这个块设备时直接报错，上层文件系统（btrfs/ext4）只能跟着报错。"
+     "注意：设备名是 dm-N 或 mdN 时，它只是“存储空间/阵列”的映射层，真正坏掉的是它底下某块物理硬盘。"
+     "这条日志是结果，不是原因。",
+     "① 用 renhua --dmesg 看同一时段有没有 ata / UNC / link 记录，那才是具体哪块盘；"
+     "② 用 lsblk -o NAME,SIZE,MODEL 或 dmsetup deps -o devname 把 dm-N 拆到底层 sdX；"
+     "③ 定位到物理盘再扫坏道/换盘，别急着修文件系统。", "blk_err"),
+    (r"blk_update_request:\s*I\/O error, dev (dm-\d+|md\d+|sd\w+), sector (\d+)", "块设备 I/O 失败（映射层报错）", "严重",
+     "同一个扇区被反复读写失败，块层已放弃重试。dm-/md- 是逻辑卷名，底下仍对应某块物理盘。",
+     "同样回到物理盘层面查：同段 dmesg 里的 ataN / UNC 才是根因；坏道成片就换盘。", "blk_err"),
+    (r"bdev (\/dev\/(?:dm-\d+|md\d+|sd\w+)) errs: wr (\d+), rd (\d+), flush (\d+), corrupt (\d+)", "btrfs 记录到的设备累计错误", "严重",
+     "btrfs 把这个设备上失败的读/写/刷盘次数记了下来。wr 或 rd 不是 0，就说明底层盘真有读不出/写不进的时候；"
+     "corrupt 不为 0 表示已有块被校验判为损坏。",
+     "① 数字不再增长才安全，还在涨就是盘在恶化；② 这块盘上的数据先备份；"
+     "③ 单盘 btrfs 没有副本可自愈，别指望 btrfs check 修好。", "blk_err"),
+    (r"BTRFS (?:error|warning).*?\(device (dm-\d+|md\d+|sd\w+)\)", "btrfs 在该设备上出错", "严重",
+     "btrfs 自己抛的错误，括号里就是出问题的设备名。dm-/md- 还要再拆到物理盘。",
+     "先按设备名定位物理盘，再看同段 ata/UNC；确认坏道后迁走数据再换盘。", "btrfs_meta"),
+    # ---------- 硬盘物理层 ----------
+    (r"error:\s*\{\s*UNC\s*\}", "硬盘物理坏道（UNC 不可纠正错误）", "严重",
+     "硬盘在读这个扇区时自己纠错也算不出来，说明这个位置的数据在盘片上已经损坏、读不回来了。"
+     "不是文件系统问题，换读法也读不出。",
+     "① 立刻停止往这块盘写入；② 能救的数据先拷走（rsync/ddrescue）；"
+     "③ 扇区数持续增加就换盘，别指望修好。", "bad_sector"),
+    (r"Sense Key\s*:\s*Medium Error", "介质错误（盘片层面读失败）", "严重",
+     "SCSI/ATA 层报告“介质错误”，即盘片或磁头在该位置读失败，通常伴随 UNC。",
+     "同 UNC：先转移数据，再评估换盘。", "bad_sector"),
+    (r"I\/O error, dev (sd\w+|dm-\d+|md\d+), sector (\d+)", "块设备 I/O 失败", "严重",
+     "内核读写这个扇区直接失败了，上层文件系统只能报错。坏道、线缆、盘体都会这样；"
+     "dm-/md- 是映射层，要拆到底层物理盘。",
+     "记下设备名与 sector，配合 smartctl / 同段 ata 日志判断是坏道还是链路问题。", "bad_sector"),
+    (r"critical medium error|unrecoverable", "不可恢复读错误", "严重",
+     "硬盘报告这块区域彻底读不出来，且无法用重试恢复。",
+     "优先做镜像备份（ddrescue），不要反复重试同一位置。", "bad_sector"),
+    # ---------- 链路 / 线缆 / 供电 ----------
+    (r"SATA link down|reset failed \(errno=-\d+\)|limiting SATA link speed", "SATA 链路掉线/复位失败", "严重",
+     "主板已经联系不上这块硬盘了：要么线松了、要么供电不足、要么盘的控制板坏了。"
+     "表现就是盘时有时无、阵列突然少一块。",
+     "断电后重新插拔 SATA 数据线和电源线，换线换口再试；仍掉线基本是盘体故障。", "link"),
+    (r"SError:\s*\{\s*[^}]*?(PHYRdyChg|10B8B|DevExch|HostInt)", "物理层错误（线缆/接插/供电）", "严重",
+     "PCIe/SATA 物理层出现了信号错误：8b/10b 编码错、设备热插拔抖动。"
+     "这类错误几乎都出在连接，不是文件系统能修的。",
+     "换 SATA 线、换接口、检查电源；避免劣质延长线或硬盘笼背板接触不良。", "link"),
+    (r"hard resetting link|soft resetting link", "链路被反复复位", "警告",
+     "内核在反复重启这条 SATA 链路来救回硬盘，说明通信一直不稳。",
+     "观察是否伴随 link down / CRC 错误；频发就查线缆和供电。", "link"),
+    (r"exception Emask|failed command:\s*(READ|WRITE) FPDMA QUEUED", "硬盘命令执行失败", "严重",
+     "发给硬盘的读写命令没有正常完成，内核记录了一次异常。"
+     "多半是坏道或链路问题导致。",
+     "结合同一时间点的 UNC / reset 记录判断根因。", "link"),
+    # ---------- btrfs ----------
+    (r"parent transid verify failed.*?wanted (\d+) found (\d+)", "btrfs 元数据事务不一致", "严重",
+     "btrfs 的元数据树里某个节点记录着“我是第 N 代”，但实际读到的是更早的一代（wanted 与 found 不符）。"
+     "这通常是掉电/强关/异常重启造成的，两份元数据副本都不对时，目录会读不出来，文件系统可能被强制只读。",
+     "① 先只读挂载抢救数据；② 卸载后 btrfs check --readonly 评估；"
+     "③ 别直接 --repair（无副本时会丢数据），必要时从备份重建。", "btrfs_meta"),
+    (r"checksum error at logical (\d+).*?physical (\d+)", "btrfs 数据校验和不符", "严重",
+     "这个数据块读出来的内容和当初写入时的校验和对不上，说明数据被破坏（坏道、写中断或内存问题）。",
+     "单盘没有副本，btrfs 无法自愈；记下 logical/physical，这些块对应的文件已损坏。", "btrfs_data"),
+    (r"unable to fixup", "btrfs 无法修复受损块", "严重",
+     "btrfs 想用副本把坏块补回来，但它找不到可用副本，只能放弃。",
+     "说明卷没有冗余；考虑先备份再重建该卷。", "btrfs_data"),
+    (r"error loading props for ino", "btrfs 元数据节点读不出（目录遍历失败）", "严重",
+     "读某个 inode 的扩展属性时元数据损坏，导致 ls/stat 这类操作直接报错。",
+     "属于元数据级损坏；先备份能读的文件，再评估 btrfs check。", "btrfs_meta"),
+    (r"scrub: (not finished|aborted).*status: -5", "btrfs scrub 被中止", "警告",
+     "scrub 扫到无法处理的错误就停了（-5 = EIO）。它没能扫完整卷。",
+     "先解决底层坏道，再重跑 scrub；否则每次都会中断。", "btrfs_data"),
+    (r"BTRFS error.*errs:\s*wr (\d+),\s*rd (\d+),\s*flush (\d+),\s*corrupt (\d+)", "btrfs 设备错误累计", "警告",
+     "这是 btrfs 给这块盘记的账：写错、读错、刷盘错、校验错的累计次数。corrupt 增长说明数据在持续受损。",
+     "看重 corrupt 是否还在涨；涨就说明盘还在恶化。", "btrfs_data"),
+    # ---------- ext4 ----------
+    (r"EXT4-fs error", "ext4 检测到文件系统错误", "严重",
+     "ext4 在读写时发现元数据自相矛盾，通常会立刻把卷切成只读，防止越写越坏。",
+     "卸载后跑 e2fsck -f 修复；反复出现要查底层盘。", "ext4"),
+    (r"EXT4-fs.*re-mounted.*(read-only|ro)", "ext4 已被切为只读", "警告",
+     "ext4 为了自保把卷改成只读了，此时所有写入都会失败。",
+     "先查明错误原因（dmesg 前文），修复后再重新挂载。", "ext4"),
+    (r"emergency_ro", "ext4 紧急只读模式", "严重",
+     "卷进入了紧急只读状态，通常是多次 I/O 错误后的保护动作。",
+     "停止写入、备份数据，然后做 fsck。", "ext4"),
+    # ---------- md / RAID ----------
+    (r"md/raid\w*:.*?active with \d+ out of (\d+) mirrors", "阵列成员不全（降级）", "警告",
+     "这个 RAID 只剩部分成员在工作，冗余已经没了；再坏一块就全丢。",
+     "尽快补盘重建；单成员阵列等于没有保护。", "raid"),
+    (r"broken raid\d|raid\d.*?(degraded|fail)", "RAID 阵列损坏/降级", "严重",
+     "阵列被内核标记为损坏，可能有成员盘掉线或数据不同步。",
+     "先确认哪块盘掉线（mdadm --detail），不要盲目 --force 重组。", "raid"),
+    (r"bad block|badblocks found|(btrfs|EXT4-fs|XFS).*?(corrupt|csum failed|bad digest)", "检测到坏块记录", "警告",
+     "某个层面记录了坏块信息。",
+     "确认是硬盘物理坏块还是文件系统层面标记。", "bad_sector"),
+    # ---------- 系统层 ----------
+    (r"Out of memory|oom-kill|Out of Memory", "内存耗尽（OOM）", "严重",
+     "系统内存用光了，内核开始杀进程。",
+     "查是哪个进程吃内存；加内存或限制服务内存。", "system"),
+    (r"No space left on device", "磁盘空间满", "警告",
+     "目标文件系统没有可用空间，写入被拒绝。",
+     "清理空间或扩容；注意 btrfs 的 metadata 也可能先满。", "system"),
+    (r"blocked for more than \d+ seconds|hung_task|soft lockup", "内核任务卡死", "严重",
+     "有内核任务长时间卡住不动，通常是底层 I/O 卡死（坏盘、链路挂起）。",
+     "查同一时段的硬盘错误；必要时重启并检查存储链路。", "system"),
+    (r"Kernel panic|Oops|BUG:", "内核崩溃", "严重",
+     "内核自身崩了，系统会重启或宕机。",
+     "保存完整 dmesg / pstore，重点看崩溃前最后调用的驱动（常见是存储驱动）。", "system"),
+    (r"mdadm|md\d*:.*?recovery|resync", "阵列正在重建/同步", "提示",
+     "RAID 在做重建或同步，期间性能会明显下降。",
+     "等它跑完，别在此期间做重负载操作。", "raid"),
+    (r"ata\d+\.00: (?:configured for|SATA link up)", "SATA 链路正常建立", "提示",
+     "这条不是错误，是链路协商成功的记录。",
+     "无需处理，可作为时间线参考。", "info"),
+]
+
+SEV_ORDER = {"严重": 0, "警告": 1, "提示": 2}
+SEV_TAG = {"严重": "🔴 严重", "警告": "🟠 警告", "提示": "⚪ 提示"}
+
+
+def read_journal():
+    try:
+        return subprocess.run(["journalctl", "-xe", "--no-pager", "-n", "300"],
+                              capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return ""
+
+
+def read_dmesg():
+    try:
+        r = subprocess.run(["dmesg", "-T"], capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            r = subprocess.run(["sudo", "-n", "dmesg", "-T"], capture_output=True, text=True, timeout=30)
+        return r.stdout
+    except Exception:
+        return ""
+
+
+def explain(text, top_only=False):
+    samples = {}
+    counts = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        for regex, title, sev, human, advice, cat in RULES:
+            if re.search(regex, s, re.IGNORECASE):
+                counts[title] = counts.get(title, 0) + 1
+                if title not in samples:
+                    samples[title] = s[:220]
+                break
+
+    if not counts:
+        print("没识别到已知的错误模式。你可以把报错原文直接贴给 renhua，或把它当普通日志看。")
+        return
+
+    info = {}
+    for regex, title, sev, human, advice, cat in RULES:
+        info[title] = (sev, human, advice)
+
+    print("=" * 68)
+    print("  报错翻译结果（共 %d 类 / %d 条命中）" % (len(counts), sum(counts.values())))
+    print("=" * 68)
+    items = sorted(counts.items(), key=lambda kv: (SEV_ORDER[info[kv[0]][0]], -kv[1]))
+    for title, n in items:
+        sev, human, advice = info[title]
+        print("\n%s  %s   ×%d" % (SEV_TAG[sev], title, n))
+        if not top_only:
+            print("  原文 : %s" % samples[title])
+            print("  人话 : %s" % human)
+            print("  建议 : %s" % advice)
+    if top_only:
+        print("\n（--top 模式只显示统计；去掉该参数可看人话解释）")
+
+
+def main():
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        return
+    if "--rules" in args:
+        print("内置规则 %d 条：\n" % len(RULES))
+        for regex, title, sev, human, advice, cat in RULES:
+            print("  [%s] %-28s %s" % (SEV_TAG[sev], title, regex[:60]))
+        return
+    top_only = "--top" in args
+    text = ""
+    if "--dmesg" in args:
+        text = read_dmesg()
+        if not text.strip():
+            print("读不到内核日志（普通用户无权读取）。请改用：sudo dmesg -T | renhua  或  sudo renhua --dmesg")
+            return
+    elif "--journal" in args:
+        text = read_journal()
+        if not text.strip():
+            print("读不到 journal。请改用：sudo journalctl -xe | renhua")
+            return
+    else:
+        positional = [a for a in args if not a.startswith("--")]
+        if positional:
+            text = " ".join(positional)
+        elif not sys.stdin.isatty():
+            text = sys.stdin.read()
+        else:
+            text = read_dmesg()
+    explain(text, top_only)
+
+
+if __name__ == "__main__":
+    main()
